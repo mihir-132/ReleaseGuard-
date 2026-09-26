@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import uploadRouter from './routes/upload.js';
+import analysisRouter from './routes/analysis.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -12,6 +13,7 @@ app.get('/api/health', (_req, res) => {
 });
 
 app.use('/api/upload', uploadRouter);
+app.use('/api/analysis', analysisRouter);
 
 app.listen(PORT, () => {
   console.log(`Server listening on http://localhost:${PORT}`);
