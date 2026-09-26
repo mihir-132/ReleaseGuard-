@@ -1,0 +1,18 @@
+# Dependencies
+node_modules/
+
+# Environment
+.env
+
+# Build output
+client/dist/
+
+# Persisted report data
+data/reports/
+
+# Uploaded/extracted release bundles
+data/runs/
+
+# OS / editor
+.DS_Store
+Thumbs.db
