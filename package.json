@@ -2,6 +2,7 @@
   "name": "release-guard",
   "version": "1.0.0",
   "private": true,
+  "type": "module",
   "workspaces": [
     "client",
     "server"
@@ -9,7 +10,8 @@
   "scripts": {
     "dev": "concurrently -n client,server -c cyan,green \"npm run dev --workspace=client\" \"npm run dev --workspace=server\"",
     "build": "npm run build --workspace=client",
-    "test": "npm run test --workspace=server"
+    "test": "npm run test --workspace=server",
+    "bundle:zip": "node scripts/bundle-zip.js"
   },
   "devDependencies": {
     "concurrently": "^9.1.0"

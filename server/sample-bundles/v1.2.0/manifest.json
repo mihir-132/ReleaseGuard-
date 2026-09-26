@@ -1,0 +1,25 @@
+{
+  "name": "payment-service",
+  "version": "1.2.0",
+  "previousVersion": "1.1.3",
+  "releaseDate": "2025-07-01",
+  "environment": "production",
+  "team": "Platform",
+  "description": "Adds JWT refresh-token rotation, updates database connection-pool configuration, and introduces the /api/v2/checkout endpoint. Bumps lodash to v4 for security fixes.",
+  "migrations": [
+    "20250630_add_refresh_token_index.sql",
+    "20250629_add_audit_log_table.sql"
+  ],
+  "configChanges": [
+    "JWT_REFRESH_SECRET",
+    "DATABASE_POOL_SIZE",
+    "FEATURE_FLAG_CHECKOUT_V2"
+  ],
+  "previousConfigKeys": [
+    "DATABASE_MAX_CONNECTIONS",
+    "JWT_SECRET",
+    "FEATURE_FLAG_NEW_CHECKOUT"
+  ],
+  "testSuites": ["unit", "integration"],
+  "changedAreas": ["src/auth", "src/db", "src/api"]
+}

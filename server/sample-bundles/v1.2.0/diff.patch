@@ -1,0 +1,344 @@
+diff --git a/package.json b/package.json
+index a3f1c82..b7e4d10 100644
+--- a/package.json
++++ b/package.json
+@@ -1,6 +1,6 @@
+ {
+   "name": "payment-service",
+-  "version": "1.1.3",
++  "version": "1.2.0",
+   "description": "Handles payment processing, checkout, and user auth for the platform.",
+   "type": "module",
+   "main": "src/index.js",
+@@ -12,11 +12,13 @@
+   "dependencies": {
+     "axios": "^1.6.8",
+     "dotenv": "^16.4.5",
+     "express": "^4.19.2",
+     "jsonwebtoken": "^9.0.2",
+-    "lodash": "^3.10.1",
++    "lodash": "^4.17.21",
+     "pg": "^8.11.5",
+-    "uuid": "^8.3.2"
++    "stripe": "^15.3.0",
++    "uuid": "^9.0.1",
++    "zod": "^3.22.4"
+   },
+   "devDependencies": {
+     "eslint": "^8.57.0",
+diff --git a/src/auth/jwt.js b/src/auth/jwt.js
+new file mode 100644
+index 0000000..c4a17b1
+--- /dev/null
++++ b/src/auth/jwt.js
+@@ -0,0 +1,41 @@
++import jwt from 'jsonwebtoken';
++
++const ACCESS_TOKEN_TTL = '15m';
++const REFRESH_TOKEN_TTL = '7d';
++
++/**
++ * Sign a short-lived access token.
++ * @param {object} payload
++ * @returns {string}
++ */
++export function signAccessToken(payload) {
++  return jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: ACCESS_TOKEN_TTL });
++}
++
++/**
++ * Sign a refresh token using the dedicated refresh secret.
++ * The refresh secret is rotated independently of the access secret.
++ * @param {object} payload
++ * @returns {string}
++ */
++export function signRefreshToken(payload) {
++  return jwt.sign(payload, process.env.JWT_REFRESH_SECRET, { expiresIn: REFRESH_TOKEN_TTL });
++}
++
++/**
++ * Verify and decode an access token.
++ * @param {string} token
++ * @returns {object}
++ */
++export function verifyAccessToken(token) {
++  return jwt.verify(token, process.env.JWT_SECRET);
++}
++
++/**
++ * Verify and decode a refresh token.
++ * @param {string} token
++ * @returns {object}
++ */
++export function verifyRefreshToken(token) {
++  return jwt.verify(token, process.env.JWT_REFRESH_SECRET);
++}
+diff --git a/src/auth/refreshTokenRotation.js b/src/auth/refreshTokenRotation.js
+new file mode 100644
+index 0000000..d9e2a44
+--- /dev/null
++++ b/src/auth/refreshTokenRotation.js
+@@ -0,0 +1,30 @@
++import { verifyRefreshToken, signAccessToken, signRefreshToken } from './jwt.js';
++import { invalidateRefreshToken, storeRefreshToken, isRefreshTokenValid } from './tokenStore.js';
++
++/**
++ * Rotate a refresh token:
++ * 1. Verify the incoming refresh token
++ * 2. Invalidate it (one-time use)
++ * 3. Issue a new access + refresh token pair
++ *
++ * @param {string} incomingRefreshToken
++ * @returns {{ accessToken: string, refreshToken: string }}
++ */
++export async function rotateRefreshToken(incomingRefreshToken) {
++  const payload = verifyRefreshToken(incomingRefreshToken);
++
++  const isValid = await isRefreshTokenValid(incomingRefreshToken);
++  if (!isValid) {
++    throw new Error('Refresh token has already been used or revoked');
++  }
++
++  await invalidateRefreshToken(incomingRefreshToken);
++
++  const userPayload = { sub: payload.sub, role: payload.role };
++  const newAccessToken = signAccessToken(userPayload);
++  const newRefreshToken = signRefreshToken(userPayload);
++
++  await storeRefreshToken(newRefreshToken, payload.sub);
++
++  return { accessToken: newAccessToken, refreshToken: newRefreshToken };
++}
+diff --git a/src/auth/session.js b/src/auth/session.js
+deleted file mode 100644
+index 7c3d091..0000000
+--- a/src/auth/session.js
++++ /dev/null
+@@ -1,22 +0,0 @@
+-import { v4 as uuidv4 } from 'uuid';
+-
+-const sessions = new Map();
+-
+-/**
+- * Create a new session entry (legacy server-side session management).
+- * Replaced by JWT refresh-token rotation in v1.2.0.
+- * @param {string} userId
+- * @returns {string} sessionId
+- */
+-export function createSession(userId) {
+-  const sessionId = uuidv4();
+-  sessions.set(sessionId, { userId, createdAt: Date.now() });
+-  return sessionId;
+-}
+-
+-export function getSession(sessionId) {
+-  return sessions.get(sessionId) ?? null;
+-}
+-
+-export function destroySession(sessionId) {
+-  sessions.delete(sessionId);
+-}
+diff --git a/src/db/pool.js b/src/db/pool.js
+index 2b8f4a1..9d5e3a7 100644
+--- a/src/db/pool.js
++++ b/src/db/pool.js
+@@ -1,20 +1,40 @@
+-import { Pool } from 'pg';
++import pg from 'pg';
++
++const { Pool } = pg;
+ 
+ let pool;
+ 
+-export function getPool() {
++/**
++ * Return the singleton connection pool.
++ * Uses DATABASE_POOL_SIZE from env (default: 10).
++ * Upgraded from pg-pool v2 to pg-pool v3 in v1.2.0.
++ */
++export function getPool() {
+   if (!pool) {
+     pool = new Pool({
+       connectionString: process.env.DATABASE_URL,
+-      max: parseInt(process.env.DATABASE_MAX_CONNECTIONS ?? '5', 10),
++      max: parseInt(process.env.DATABASE_POOL_SIZE ?? '10', 10),
++      idleTimeoutMillis: 30000,
++      connectionTimeoutMillis: 5000,
+     });
++
++    pool.on('error', (err) => {
++      console.error('Unexpected error on idle pool client', err);
++    });
+   }
+   return pool;
+ }
+ 
+-export async function query(text, params) {
+-  return getPool().query(text, params);
++/**
++ * Execute a single parameterised query against the pool.
++ * @param {string} text
++ * @param {any[]} params
++ */
++export async function query(text, params) {
++  const client = await getPool().connect();
++  try {
++    return await client.query(text, params);
++  } finally {
++    client.release();
++  }
+ }
+diff --git a/src/db/userRepository.js b/src/db/userRepository.js
+index 1a2b3c4..5f6e7d8 100644
+--- a/src/db/userRepository.js
++++ b/src/db/userRepository.js
+@@ -1,14 +1,48 @@
+ import { query } from './pool.js';
+-import _ from 'lodash';
++import _ from 'lodash'; // now v4 — uses _.pick instead of deprecated _.pluck
+ 
+-export async function findUserById(id) {
++/**
++ * Find a user by ID.
++ * Lodash v4 is used for safe object pick (upgraded from v3 in this release).
++ * @param {string} id
++ */
++export async function findUserById(id) {
+   const result = await query('SELECT * FROM users WHERE id = $1', [id]);
+   if (result.rows.length === 0) return null;
+-  return result.rows[0];
++  return _.pick(result.rows[0], ['id', 'email', 'role', 'createdAt']);
++}
++
++/**
++ * Store a refresh token for a given user.
++ * @param {string} token
++ * @param {string} userId
++ */
++export async function storeRefreshToken(token, userId) {
++  await query(
++    'INSERT INTO refresh_tokens (token, user_id, created_at) VALUES ($1, $2, NOW())',
++    [token, userId]
++  );
++}
++
++/**
++ * Check whether a refresh token is still valid (not invalidated).
++ * @param {string} token
++ * @returns {Promise<boolean>}
++ */
++export async function isRefreshTokenValid(token) {
++  const result = await query(
++    'SELECT 1 FROM refresh_tokens WHERE token = $1 AND invalidated_at IS NULL',
++    [token]
++  );
++  return result.rows.length > 0;
++}
++
++/**
++ * Invalidate a refresh token (mark as used).
++ * @param {string} token
++ */
++export async function invalidateRefreshToken(token) {
++  await query(
++    'UPDATE refresh_tokens SET invalidated_at = NOW() WHERE token = $1',
++    [token]
++  );
+ }
+diff --git a/src/api/checkoutRoutes.js b/src/api/checkoutRoutes.js
+new file mode 100644
+index 0000000..e8f1c23
+--- /dev/null
++++ b/src/api/checkoutRoutes.js
+@@ -0,0 +1,37 @@
++import express from 'express';
++import _ from 'lodash';
++import { findUserById } from '../db/userRepository.js';
++
++const router = express.Router();
++
++/**
++ * POST /api/v2/checkout
++ * New v2 checkout endpoint introduced in v1.2.0.
++ * Replaces the deprecated /api/v1/checkout.
++ *
++ * Body: { userId, cartItems: [{ sku, qty, price }] }
++ */
++router.post('/v2/checkout', async (req, res) => {
++  const { userId, cartItems } = req.body;
++
++  if (!userId || !Array.isArray(cartItems) || cartItems.length === 0) {
++    return res.status(400).json({ error: 'userId and cartItems are required' });
++  }
++
++  const user = await findUserById(userId);
++  if (!user) {
++    return res.status(404).json({ error: 'User not found' });
++  }
++
++  const featureFlagEnabled = process.env.FEATURE_FLAG_CHECKOUT_V2 === 'true';
++  if (!featureFlagEnabled) {
++    return res.status(503).json({ error: 'Checkout v2 is not yet enabled' });
++  }
++
++  // Compute order total using lodash v4 sumBy
++  const total = _.sumBy(cartItems, (item) => item.qty * item.price);
++  const orderId = `ORD-${Date.now()}`;
++
++  res.status(201).json({ orderId, total, userId });
++});
++
++export default router;
+diff --git a/src/api/authRoutes.js b/src/api/authRoutes.js
+new file mode 100644
+index 0000000..f2c3d89
+--- /dev/null
++++ b/src/api/authRoutes.js
+@@ -0,0 +1,23 @@
++import express from 'express';
++import { rotateRefreshToken } from '../auth/refreshTokenRotation.js';
++
++const router = express.Router();
++
++/**
++ * POST /api/auth/refresh
++ * Exchange a valid refresh token for a new access + refresh token pair.
++ */
++router.post('/auth/refresh', async (req, res) => {
++  const { refreshToken } = req.body;
++  if (!refreshToken) {
++    return res.status(400).json({ error: 'refreshToken is required' });
++  }
++  try {
++    const tokens = await rotateRefreshToken(refreshToken);
++    res.json(tokens);
++  } catch (err) {
++    res.status(401).json({ error: err.message });
++  }
++});
++
++export default router;
+diff --git a/src/api/legacyCheckout.js b/src/api/legacyCheckout.js
+deleted file mode 100644
+index 8d2e1f5..0000000
+--- a/src/api/legacyCheckout.js
++++ /dev/null
+@@ -1,18 +0,0 @@
+-import express from 'express';
+-
+-const router = express.Router();
+-
+-/**
+- * POST /api/v1/checkout
+- * @deprecated Use /api/v2/checkout instead (introduced in v1.2.0).
+- */
+-router.post('/v1/checkout', async (req, res) => {
+-  const { userId, cartItems } = req.body;
+-  if (!userId || !cartItems) {
+-    return res.status(400).json({ error: 'Missing required fields' });
+-  }
+-  // Stub implementation — replaced by checkoutRoutes.js in v1.2.0
+-  res.status(501).json({ error: 'Not implemented' });
+-});
+-
+-export default router;
