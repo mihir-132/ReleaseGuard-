@@ -1,34 +1,56 @@
-import { useSSE } from '../hooks/useSSE.js';
+import { useSSE, STEP_NAMES } from '../hooks/useSSE.js';
+import StepCard from './StepCard.jsx';
 
 /**
- * PipelineView — minimal component to display live pipeline events.
+ * PipelineView — live pipeline progress display.
  *
- * Connects to the SSE stream for the given runId and logs/renders each
- * event as it arrives. This is a development-only view; polished UI
- * will be built in a later sub-task.
+ * Connects to the SSE stream for the given runId and renders all 8 steps,
+ * updating each card as events arrive.
  *
- * @param {{ runId: string|null }} props
+ * @param {{ runId: string }} props
  */
 function PipelineView({ runId }) {
-  const { events, connected, error } = useSSE(runId);
-
-  if (!runId) {
-    return <p>No run selected.</p>;
-  }
+  const { steps, isDone, connected, error } = useSSE(runId);
 
   return (
-    <div>
-      <p>
-        Run: <code>{runId}</code> — {connected ? 'connected' : 'disconnected'}
-      </p>
-      {error && <p style={{ color: 'red' }}>{error}</p>}
-      <ul>
-        {events.map((e, i) => (
-          <li key={i}>
-            <strong>{e.event}</strong>: <code>{JSON.stringify(e.data)}</code>
-          </li>
-        ))}
-      </ul>
+    <div className="pipeline-view">
+      <div className="pipeline-view__header">
+        <h2 className="pipeline-view__title">Analyzing Release</h2>
+        <p className="pipeline-view__run-id">
+          Run ID: <code>{runId}</code>
+        </p>
+        <div className="pipeline-view__status">
+          {isDone ? (
+            <span className="pipeline-status pipeline-status--done">✓ Analysis complete</span>
+          ) : connected ? (
+            <span className="pipeline-status pipeline-status--running">● Running…</span>
+          ) : error ? (
+            <span className="pipeline-status pipeline-status--error">✕ {error}</span>
+          ) : (
+            <span className="pipeline-status pipeline-status--connecting">Connecting…</span>
+          )}
+        </div>
+      </div>
+
+      {error && !isDone && (
+        <p className="pipeline-view__error" role="alert">{error}</p>
+      )}
+
+      <div className="pipeline-steps">
+        {STEP_NAMES.map((name, index) => {
+          const step = steps[name];
+          return (
+            <StepCard
+              key={name}
+              name={name}
+              index={index}
+              status={step.status}
+              findings={step.findings}
+              severity={step.severity}
+            />
+          );
+        })}
+      </div>
     </div>
   );
 }

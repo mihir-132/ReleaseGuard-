@@ -32,7 +32,15 @@ vi.mock('../../storage/reports.js', () => ({
   writeReport: vi.fn(),
 }));
 
-import { writeReport } from '../../storage/reports.js';
+// ---------------------------------------------------------------------------
+// Mock watsonx so tests don't make real HTTP calls
+// ---------------------------------------------------------------------------
+vi.mock('../../ai/watsonx.js', () => ({
+  generateReleaseNotes: vi.fn().mockResolvedValue('## Mocked Release Notes'),
+}));
+
+import { writeReport }        from '../../storage/reports.js';
+import { generateReleaseNotes } from '../../ai/watsonx.js';
 import report from './08-report.js';
 
 // ---------------------------------------------------------------------------
@@ -348,11 +356,18 @@ describe('report — overallSeverity precedence', () => {
 // Tests — releaseNotes
 // ---------------------------------------------------------------------------
 
-describe('report — releaseNotes before watsonx', () => {
-  it('releaseNotes is null', async () => {
+describe('report — releaseNotes', () => {
+  it('releaseNotes is set from generateReleaseNotes result', async () => {
+    generateReleaseNotes.mockResolvedValueOnce('## AI Release Notes');
     const ctx = makeCtx({ results: FIXTURE_RESULTS });
     const { report: r } = await report(ctx);
-    expect(r.releaseNotes).toBeNull();
+    expect(r.releaseNotes).toBe('## AI Release Notes');
+  });
+
+  it('releaseNotes is a string (not null) after watsonx integration', async () => {
+    const ctx = makeCtx({ results: FIXTURE_RESULTS });
+    const { report: r } = await report(ctx);
+    expect(typeof r.releaseNotes).toBe('string');
   });
 });
 
@@ -480,5 +495,51 @@ describe('report — real synthetic v1.2.0 fixture', () => {
 
   it('writeReport was called once', () => {
     expect(writeReport).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests — Step 08 places generateReleaseNotes result into report.releaseNotes
+// ---------------------------------------------------------------------------
+
+describe('report — generateReleaseNotes integration', () => {
+  it('calls generateReleaseNotes once per run', async () => {
+    generateReleaseNotes.mockResolvedValueOnce('## Notes');
+    const ctx = makeCtx({ results: FIXTURE_RESULTS });
+    await report(ctx);
+    expect(generateReleaseNotes).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes summaryContext with correct name and version from manifest', async () => {
+    generateReleaseNotes.mockResolvedValueOnce('## Notes');
+    const ctx = makeCtx({ results: FIXTURE_RESULTS });
+    await report(ctx);
+    const [summaryCtx] = generateReleaseNotes.mock.calls[0];
+    expect(summaryCtx.name).toBe('payment-service');
+    expect(summaryCtx.version).toBe('1.2.0');
+  });
+
+  it('passes summaryContext with readinessScore from Step 07', async () => {
+    generateReleaseNotes.mockResolvedValueOnce('## Notes');
+    const ctx = makeCtx({ results: FIXTURE_RESULTS });
+    await report(ctx);
+    const [summaryCtx] = generateReleaseNotes.mock.calls[0];
+    expect(summaryCtx.readinessScore).toBe(60);
+  });
+
+  it('places the returned string into report.releaseNotes', async () => {
+    generateReleaseNotes.mockResolvedValueOnce('## Step08 Release Notes');
+    const ctx = makeCtx({ results: FIXTURE_RESULTS });
+    const { report: r } = await report(ctx);
+    expect(r.releaseNotes).toBe('## Step08 Release Notes');
+  });
+
+  it('uses "unknown" for name/version when manifest is null', async () => {
+    generateReleaseNotes.mockResolvedValueOnce('## Fallback');
+    const ctx = makeCtx({ manifest: null, results: {} });
+    await report(ctx);
+    const [summaryCtx] = generateReleaseNotes.mock.calls[0];
+    expect(summaryCtx.name).toBe('unknown');
+    expect(summaryCtx.version).toBe('unknown');
   });
 });

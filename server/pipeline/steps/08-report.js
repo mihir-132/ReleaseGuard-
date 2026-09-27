@@ -2,11 +2,11 @@
  * Step 08 — Report Aggregation + Persistence
  *
  * Collects findings and structured outputs from all prior pipeline steps
- * (01–07), builds a consolidated report, persists it via storage/reports.js,
+ * (01–07), builds a consolidated report, generates AI release notes via
+ * watsonx.ai (with graceful fallback), persists it via storage/reports.js,
  * and returns the report as the step result.
  *
  * Does NOT re-run any analyzer and does NOT re-read the bundle.
- * Does NOT generate release notes (watsonx integration is a separate task).
  *
  * @param {import('../index.js').PipelineContext} ctx
  * @returns {Promise<{
@@ -19,7 +19,8 @@
  * }>}
  */
 
-import { writeReport } from '../../storage/reports.js';
+import { writeReport }        from '../../storage/reports.js';
+import { generateReleaseNotes } from '../../ai/watsonx.js';
 
 // ---------------------------------------------------------------------------
 // Severity ordering (higher index = more severe)
@@ -112,7 +113,30 @@ export default async function report(ctx) {
     ? deployResult.readinessScore
     : 0;
 
-  // ── 4. Build the consolidated report ─────────────────────────────────────
+  // ── 4. Build summaryContext for release notes ─────────────────────────────
+  const diffResult  = results?.['02-diff']         ?? {};
+  const depResult   = results?.['03-dependencies'] ?? {};
+  const migResult   = results?.['05-migrations']   ?? {};
+
+  const changedCount = Array.isArray(diffResult.changedFiles)
+    ? diffResult.changedFiles.length
+    : 0;
+  const depChanges   = Array.isArray(depResult.changes) ? depResult.changes.length : 0;
+  const migChanges   = Array.isArray(migResult.changes) ? migResult.changes.length : 0;
+
+  const summaryContext = {
+    name:            manifest?.name    ?? 'unknown',
+    version:         manifest?.version ?? 'unknown',
+    diffSummary:     `${changedCount} file(s) changed`,
+    depSummary:      `${depChanges} dependency change(s)`,
+    migrationCount:  migChanges,
+    readinessScore:  overallReadiness,
+  };
+
+  // ── 5. Generate release notes (watsonx.ai, graceful fallback) ─────────────
+  const releaseNotes = await generateReleaseNotes(summaryContext);
+
+  // ── 6. Build the consolidated report ─────────────────────────────────────
   const generatedAt = new Date().toISOString();
 
   const consolidatedReport = {
@@ -122,13 +146,13 @@ export default async function report(ctx) {
     overallReadiness,
     overallSeverity,
     steps,
-    releaseNotes:    null,   // watsonx integration not yet implemented
+    releaseNotes,
   };
 
-  // ── 5. Persist ────────────────────────────────────────────────────────────
+  // ── 7. Persist ────────────────────────────────────────────────────────────
   writeReport(runId, consolidatedReport);
 
-  // ── 6. Return step result ─────────────────────────────────────────────────
+  // ── 8. Return step result ─────────────────────────────────────────────────
   return {
     findings:        [],   // aggregation step itself produces no new findings
     report:          consolidatedReport,
