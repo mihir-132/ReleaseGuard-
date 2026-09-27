@@ -17,8 +17,8 @@ app.use('/api/upload', uploadRouter);
 app.use('/api/analysis', analysisRouter);
 app.use('/api/reports', reportsRouter);
 
-app.listen(PORT, () => {
-  console.log(`Server listening on http://localhost:${PORT}`);
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server listening on http://0.0.0.0:${PORT}`);
 });
 
 export default app;
